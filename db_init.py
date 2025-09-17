@@ -12,7 +12,10 @@ def main():
         CREATE TABLE IF NOT EXISTS position (
             position_fen TEXT PRIMARY KEY,
             eval INTEGER,
-            game_count INTEGER -- Number of Lichess games that reached this position
+            depth INTEGER,
+            white INTEGER,
+            draw INTEGER,
+            black INTEGER
         )
     ''')
 
@@ -21,8 +24,10 @@ def main():
             position_fen TEXT,
             move_uci TEXT, -- Move in UCI notation (for engines)
             move_san TEXT, -- Move in Standard Algebraic Notation (for humans)
-            made_count INTEGER, -- Number of games that progressed with this move
             result_fen TEXT,
+            white INTEGER,
+            draw INTEGER,
+            black INTEGER,
             PRIMARY KEY (position_fen, move_uci),
             FOREIGN KEY (position_fen) REFERENCES position(position_fen)
         )

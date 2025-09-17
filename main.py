@@ -3,10 +3,12 @@ import chess.engine
 import sqlite3
 import requests
 import json
+import time
 
-MIN_GAMES = 5000
+MIN_GAMES = 100000
 SPEEDS = ['blitz']
-RATINGS = ['1200', '1400', '1600', '1800']
+RATINGS = ['1400', '1600', '1800'] # Covers openings between roughly 40th and 90th percentiles
+# TODO: Add starting opening option
 
 DB_FILE = 'positions.db'
 ENGINE_PATH = '/opt/homebrew/Cellar/stockfish/17.1/bin/stockfish'
@@ -34,9 +36,36 @@ def get_position_moves(fen, token):
     except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout) as e :
         print("Request failed. Trying again in 60 seconds.")
         time.sleep(60)
-        return getLichessMoves(board, count)
+        return get_position_moves(fen, token)
 
-# Returns board's FEN but without the half-move clock or the turn count, as these are irrelevant in the opening
+def get_cloud_analysis(fen, token):
+    params = {
+        'fen': fen,
+        'variant': 'standard'
+    }
+    headers = { 'Authorization': 'Bearer ' + token }
+
+    try:
+        resp = requests.get("https://lichess.org/api/cloud-eval", params=params, headers=headers)
+        if resp.status_code == 404: # Position not in cloud database
+            return None
+        elif resp.status_code == 429:
+            print("Made too many requests. Trying again in 60 seconds.")
+            time.sleep(60)
+            return get_cloud_analysis(fen, token)
+        analysis = json.loads(resp.text)
+        depth = analysis['depth']
+        eval = analysis['pvs'][0]['cp']
+        return {
+            'eval': eval,
+            'depth': depth
+        }
+    except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout) as e :
+        print("Request failed. Trying again in 60 seconds.")
+        time.sleep(60)
+        return get_cloud_analysis(fen, token)
+
+# Returns board's FEN but without the half-move clock or the turn count
 def simple_fen(board):
     fen = board.fen()
     parts = fen.split(' ')[:4]
@@ -44,28 +73,41 @@ def simple_fen(board):
 
 def add_position(board, token, engine, cursor):
     fen = simple_fen(board)
-    moves = get_position_moves(fen, token)
-    total = moves['white'] + moves['draws'] + moves['black']
-    analysis = engine.analyse(board, chess.engine.Limit(depth=ENGINE_DEPTH))
-    eval = analysis['score'].white().score(mate_score=1000000)
+    plays = get_position_moves(fen, token)
+
+    # Get position evaluation from Lichess cloud or local engine
+    analysis = get_cloud_analysis(fen, token)
+    if analysis is None:
+        analysis = engine.analyse(board, chess.engine.Limit(depth=ENGINE_DEPTH))
+        eval = analysis['score'].white().score(mate_score=1000000)
+        depth = ENGINE_DEPTH
+    else:
+        eval = analysis['eval']
+        depth = analysis['depth']
+
+    white = plays['white']
+    draw = plays['draws']
+    black = plays['black']
 
     cursor.execute("""
-        INSERT INTO position (position_fen, eval, game_count)
-        VALUES (?, ?, ?)
-    """, [fen, eval, total])
+        INSERT INTO position (position_fen, eval, depth, white, draw, black)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, [fen, eval, depth, white, draw, black])
 
-    for move in moves['moves']:
-        total = move['white'] + move['draws'] + move['black']
+    for move in plays['moves']:
         uci = move['uci']
         san = move['san']
         new_board = chess.Board(fen)
         new_board.push(chess.Move.from_uci(uci))
 
+        white = move['white']
+        draw = move['draws']
+        black = move['black']
 
         cursor.execute("""
-            INSERT INTO move (position_fen, move_uci, move_san, result_fen, made_count)
-            VALUES (?, ?, ?, ?, ?)
-        """, [fen, uci, san, simple_fen(new_board), total])
+            INSERT INTO move (position_fen, move_san, move_uci, result_fen, white, draw, black)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, [fen, uci, san, simple_fen(new_board), white, draw, black])
 
 def main():
     with open('token.txt', 'r') as f:
@@ -90,7 +132,7 @@ def main():
     while True:
         # Start from the most played move that hasn't been evaluated yet
         cursor.execute("""
-            SELECT result_fen, SUM(made_count) AS total FROM move
+            SELECT result_fen, SUM(white + draw + black) AS total FROM move
             WHERE result_fen NOT IN (
                 SELECT position_fen
                 FROM position
