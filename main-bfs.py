@@ -5,7 +5,8 @@ import requests
 import json
 import time
 
-MIN_GAMES = 100000
+# TODO: Move to config.yaml
+MIN_GAMES = 50000
 SPEEDS = ['blitz']
 RATINGS = ['1400', '1600', '1800'] # Covers openings between roughly 40th and 90th percentiles
 # TODO: Add starting opening option
@@ -51,6 +52,7 @@ def get_cloud_analysis(fen, token):
             return None
         elif resp.status_code == 429:
             print("Made too many requests. Trying again in 60 seconds.")
+            print(resp.text)
             time.sleep(60)
             return get_cloud_analysis(fen, token)
         analysis = json.loads(resp.text)
@@ -73,18 +75,13 @@ def simple_fen(board):
 
 def add_position(board, token, engine, cursor):
     fen = simple_fen(board)
+
+    # Get position evaluation from Stockfish
+    analysis = engine.analyse(board, chess.engine.Limit(depth=ENGINE_DEPTH))
+    eval = analysis['score'].white().score(mate_score=1000000)
+    depth = ENGINE_DEPTH
+
     plays = get_position_moves(fen, token)
-
-    # Get position evaluation from Lichess cloud or local engine
-    analysis = get_cloud_analysis(fen, token)
-    if analysis is None:
-        analysis = engine.analyse(board, chess.engine.Limit(depth=ENGINE_DEPTH))
-        eval = analysis['score'].white().score(mate_score=1000000)
-        depth = ENGINE_DEPTH
-    else:
-        eval = analysis['eval']
-        depth = analysis['depth']
-
     white = plays['white']
     draw = plays['draws']
     black = plays['black']
